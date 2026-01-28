@@ -1,9 +1,1 @@
-import os
-
-desktop = os.path.join(os.path.expanduser("~"), "Desktop")
-
-for i in range(1, 6):
-    folder_path = os.path.join(desktop, f"Klasor_{i}")
-    os.makedirs(folder_path, exist_ok=True)
-
-print("Masaüstünde 5 adet klasör oluşturuldu.")
+pass
